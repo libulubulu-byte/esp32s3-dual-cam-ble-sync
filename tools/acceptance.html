@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32-S3 Dual-Cam BLE Sync &middot; Acceptance Bench</title>
+<style>
+  :root{
+    --bg:#0f1216; --card:#171c23; --line:#242c37; --fg:#e6edf3; --dim:#8b98a9;
+    --acc:#4c8dff; --ok:#3fb950; --warn:#d29922; --err:#f85149;
+    --mono:'Cascadia Mono',Consolas,'SF Mono',Menlo,'Courier New',monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.55 -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:16px 22px;
+         border-bottom:1px solid var(--line);background:#131820;position:sticky;top:0;z-index:5}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .sub{color:var(--dim);font-size:12px}
+  .pill{margin-left:auto;padding:4px 12px;border-radius:999px;font-size:12px;
+        border:1px solid var(--line);color:var(--dim)}
+  .pill.on{color:#fff;background:var(--ok);border-color:var(--ok)}
+  .pill.busy{color:#fff;background:var(--warn);border-color:var(--warn)}
+  .pill.err{color:#fff;background:var(--err);border-color:var(--err)}
+  main{padding:18px 22px 60px;max-width:1180px;margin:0 auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card h2{margin:0 0 10px;font-size:13px;color:var(--acc);font-weight:600;letter-spacing:.3px}
+  .card p.hint{color:var(--dim);font-size:12px;margin:6px 0 10px}
+  button{background:#212b38;color:var(--fg);border:1px solid #2f3b4b;border-radius:7px;
+         padding:7px 13px;font-size:13px;cursor:pointer;transition:.12s}
+  button:hover:not(:disabled){background:#2a3646;border-color:#3d4c60}
+  button:disabled{opacity:.42;cursor:not-allowed}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+  button.primary:hover:not(:disabled){background:#3d7ef0}
+  button.danger{color:#ffb4ae}
+  input,select{background:#0d1117;color:var(--fg);border:1px solid #2f3b4b;border-radius:7px;
+              padding:6px 9px;font-size:13px;font-family:var(--mono)}
+  input[type=number]{width:92px}
+  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .row label{color:var(--dim);font-size:12px}
+  .btns{display:flex;gap:8px;flex-wrap:wrap}
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--dim);font-weight:500;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px}
+  /* ★ keep the micro sign readable: uppercase would turn "µs" into a Greek capital Mu,
+   *   which looks exactly like "MS" (that bug shipped once already). */
+  th.noup{text-transform:none;font-family:var(--mono)}
+  .num{font-family:var(--mono)}
+  .pos{color:#ffb86b}
+  .neg{color:#6bc1ff}
+  .big{font-size:22px;font-weight:600;font-family:var(--mono)}
+  .kpi{display:flex;gap:26px;flex-wrap:wrap;margin:10px 0 4px}
+  .kpi div span{display:block;color:var(--dim);font-size:11.5px}
+  pre#log{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:10px;
+          max-height:320px;overflow:auto;font-family:var(--mono);font-size:12px;
+          color:#c7d3e0;margin:0;white-space:pre-wrap}
+  .t{color:var(--dim)}
+  .ok{color:var(--ok)}.warn{color:var(--warn)}.err{color:var(--err)}
+  code{font-family:var(--mono);background:#0d1117;padding:1px 5px;border-radius:4px;
+       border:1px solid var(--line);font-size:12px}
+  .warnbox{background:#2a2113;border:1px solid #5c4a1f;color:#e3c88a;border-radius:8px;
+          padding:10px 12px;font-size:12.5px;margin-bottom:14px;display:none}
+  .bar{height:8px;background:#0d1117;border-radius:5px;overflow:hidden;border:1px solid var(--line);
+       min-width:180px;flex:1}
+  .bar > i{display:block;height:100%;background:var(--acc);width:0;transition:width .15s}
+  ul.tight{margin:6px 0 0 18px;padding:0;color:var(--dim);font-size:12px}
+  ul.tight li{margin:2px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>ESP32-S3 Dual-Cam BLE Sync &middot; Acceptance Bench</h1>
+  <div class="sub">Service 0xABF0 &middot; Command 0xABF1 &middot; Response 0xABF2 &middot; single host serial port</div>
+  <div class="pill" id="statusPill">Disconnected</div>
+</header>
+
+<main>
+  <div class="warnbox" id="warnbox"></div>
+
+  <div class="grid">
+    <!-- 1 connect -->
+    <div class="card">
+      <h2>1 &middot; Connect (Web Serial)</h2>
+      <p class="hint">Only the <b>host</b> board's USB is needed. The slave's
+         <code>FIRE_ACTUAL</code> is relayed over BLE by the host and printed on this same
+         port with a <code>SLAVE,</code> prefix.</p>
+      <div class="btns">
+        <button class="primary" id="btnConnect">Connect serial port</button>
+        <button id="btnDisconnect" disabled>Disconnect</button>
+      </div>
+      <div class="row"><label>Port</label><span class="num" id="portName">&mdash;</span></div>
+      <div class="row"><label>BLE link</label><span class="num" id="bleState">&mdash;</span></div>
+      <div class="row"><label>Service bound</label><span class="num" id="boundState">&mdash;</span></div>
+      <div class="row"><label>Clock offset</label><span class="num" id="calibState">&mdash;</span></div>
+      <div class="row"><span class="num" id="hbInfo" style="color:var(--dim)"></span></div>
+      <p class="hint" style="margin-top:10px">
+         <b>Port release:</b> clicking <b>Disconnect</b> frees the port immediately; it is
+         also released when the page goes away, and automatically if the board is
+         unplugged or reset (the read loop notices that the port is gone and drops the
+         handle, so you can simply press <b>Connect</b> again). If the tab ever hangs,
+         close the <b>tab or the browser process</b> &mdash; a Web Serial handle is only
+         guaranteed to be released once the page is gone.</p>
+    </div>
+
+    <!-- 2 single command -->
+    <div class="card">
+      <h2>2 &middot; Single command</h2>
+      <p class="hint">Exactly the same as typing one line into the host's serial console.</p>
+      <div class="btns">
+        <button data-cmd="PING"   disabled class="qc">PING</button>
+        <button data-cmd="SNAP"   disabled class="qc">SNAP (grab + upload locally)</button>
+      </div>
+      <div class="row">
+        <input id="cmdInput" style="flex:1;min-width:200px" placeholder="FIRE,500">
+        <button id="btnSend" disabled>Send</button>
+      </div>
+      <div class="row">
+        <label>Shortcut</label>
+        <button data-cmd="FIRE,300" disabled class="qc">FIRE 300 ms</button>
+        <button data-cmd="FIRE,500" disabled class="qc">FIRE 500 ms</button>
+        <button data-cmd="FIRE,1000" disabled class="qc">FIRE 1000 ms</button>
+      </div>
+    </div>
+
+    <!-- 3 batch -->
+    <div class="card">
+      <h2>3 &middot; Sync acceptance (batch)</h2>
+      <p class="hint">For every <code>FIRE,&lt;lead_ms&gt;</code> the host pushes an
+         <b>absolute trigger instant</b> to the slave (<code>ARM,&lt;T_slave&gt;</code>);
+         each board then fires from its own <code>esp_timer</code>. The next shot is armed
+         only after <b>both</b> boards report <code>FIRE_ACTUAL</code>, so the spacing stays
+         exact.</p>
+      <div class="row">
+        <label>Runs</label><input id="runs" type="number" value="1" min="1" max="50">
+        <label>Shots per run</label><input id="rounds" type="number" value="20" min="1" max="200">
+      </div>
+      <div class="row">
+        <label>Lead (ms)</label><input id="lead" type="number" value="500" min="100" max="1000" step="50">
+        <label>Interval (ms)</label><input id="interval" type="number" value="3000" min="0" step="100">
+      </div>
+      <div class="row">
+        <label>Timeout (ms)</label><input id="timeout" type="number" value="3000" min="500">
+        <label>Limit (&micro;s)</label><input id="limitUs" type="number" value="150" min="1" step="10">
+      </div>
+      <div class="row">
+        <span style="color:var(--dim);font-size:12px">
+          <b>Interval</b> is the minimum spacing between two consecutive shots
+          (measured from the moment <code>FIRE</code> is sent). It must be larger than
+          <b>Lead</b> plus the round-trip log time, otherwise the batch is re-based.</span>
+      </div>
+      <div class="row">
+        <button class="primary" id="btnRun" disabled>Start batch</button>
+        <button class="danger" id="btnStop" disabled>Stop</button>
+        <button id="btnClear" disabled>Clear results</button>
+        <div class="bar"><i id="progBar"></i></div>
+        <span class="num" id="progTxt">0 / 0</span>
+      </div>
+      <div class="kpi">
+        <div><span>Completed</span><span class="big" id="kDone">0</span></div>
+        <div><span>max sync_error</span><span class="big" id="kMax">&mdash;</span></div>
+        <div><span>avg sync_error</span><span class="big" id="kAvg">&mdash;</span></div>
+      </div>
+      <div class="kpi">
+        <div><span>verdict</span><span class="big" id="kVerdict">&mdash;</span></div>
+        <div><span>over limit</span><span class="big" id="kOver">&mdash;</span></div>
+        <div><span>timeout</span><span class="big" id="kTimeout">&mdash;</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4 results -->
+  <div class="card" style="margin-top:14px">
+    <h2>4 &middot; Results (the &micro;s column is the evidence)</h2>
+    <p class="hint">
+      <code>&Delta; = host_fire &minus; slave_fire</code> and
+      <code>sync_error = |&Delta; &minus; median(&Delta;)|</code>, both taken from the
+      <code>esp_timer</code> reading captured <b>inside the device</b> at the moment of firing.
+      <br>&#9733; <b>&Delta; itself carries the difference between the two boards' power-on
+      instants</b> (each <code>esp_timer</code> counts from 0, so they can differ by seconds),
+      therefore <b>&Delta; must not be read as the sync error</b>.
+      <code>median(&Delta;)</code> <i>is</i> that fixed clock difference; only the fluctuation
+      left after removing it is the physical sync error.
+      <br>&#9888; <b>Only the <code>sync_error</code> column is judged</b>, sample by sample,
+      against <code>Limit (&micro;s)</code>.
+      <br><span style="color:var(--dim)">Reference columns (never used for acceptance):</span>
+      <code>jitter H</code>/<code>jitter S</code> are each board's own
+      <code>t_fire &minus; target</code>, i.e. <b>single-board timer precision</b>
+      (20&ndash;40 &micro;s in practice) &mdash; a small value does not mean the two boards
+      agreed on an instant. <code>|&Delta;j|</code> is the difference between the two boards'
+      timer precisions.
+      <br>This page never uses "when the notification arrived here" for any judgement &mdash;
+      that number is entirely the BLE connection interval (15 ms) plus browser JS
+      scheduling, and says nothing about device precision.
+    </p>
+    <p class="hint" style="margin-top:12px"><b>What each column means</b>
+       (the whole chain: <code>host_fire</code> / <code>slave_fire</code> &rarr;
+       <code>&Delta;</code> &rarr; subtract the fixed clock offset &rarr;
+       <code>sync_error</code> &larr; <b>the only column that decides PASS/FAIL</b>)</p>
+    <ul class="tight">
+      <li><code>#</code> &mdash; sample id, <code>run-index</code> (e.g. <code>1-03</code> =
+          run 1, shot 3). A timed-out row is red and reads
+          <code>timeout (HOST MISS / SLAVE ok)</code>.</li>
+      <li><code>host_fire (&micro;s)</code> &mdash; the <b>host</b>'s
+          <code>esp_timer_get_time()</code> captured at the instant it fired.
+          Local clock, counts from 0 at power-on.</li>
+      <li><code>slave_fire (&micro;s)</code> &mdash; the same for the <b>slave</b>, relayed
+          over BLE. &#9733; A <b>different</b> clock: its origin can be seconds away from
+          the host's.</li>
+      <li><code>&Delta; (&micro;s)</code> &mdash; <code>host_fire &minus; slave_fire</code>.
+          &#9733; <b>This is NOT the sync error</b>: it still contains the fixed difference
+          between the two power-on instants, so it legitimately reads hundreds of thousands
+          of &micro;s. Orange = positive, blue = negative.</li>
+      <li><code>jitter H</code> &mdash; the host's <b>own</b> timer error
+          (<code>actual &minus; scheduled</code>). Purely single-board
+          <code>esp_timer</code> precision (20&ndash;40 &micro;s in practice); a small value
+          does <b>not</b> mean the two boards agreed on an instant.</li>
+      <li><code>jitter S</code> &mdash; the same for the slave.</li>
+      <li><code>|&Delta;j|</code> &mdash; <code>|jitter H &minus; jitter S|</code>, i.e. how
+          different the two boards' timer precisions are.</li>
+      <li><code>sync_error (&micro;s)</code> &mdash;
+          <code>|&Delta; &minus; median(&Delta;)|</code>. Subtracting
+          <code>median(&Delta;)</code> removes that fixed clock offset, and whatever
+          fluctuation is left is the real physical sync error.
+          &#9888; <b>The only column used for the verdict</b>, compared per sample against
+          <code>Limit (&micro;s)</code>. Green = within limit, red = over.</li>
+    </ul>
+
+    <div id="tblWrap" style="max-height:380px;overflow:auto">
+      <table>
+        <thead><tr>
+          <th title="Sample id: run-index, e.g. 1-03 = run 1 shot 3">#</th>
+          <th title="Host's esp_timer_get_time() at the instant it fired (local clock, from 0 at power-on)">host_fire (&micro;s)</th>
+          <th title="Slave's esp_timer at fire, relayed over BLE. A DIFFERENT clock - origin can be seconds away.">slave_fire (&micro;s)</th>
+          <th title="host_fire - slave_fire. NOT the sync error: it still contains the fixed offset between the two power-on instants.">&Delta; (&micro;s)</th>
+          <th title="Host's OWN timer error (actual - scheduled). Single-board esp_timer precision only (20-40 us).">jitter H</th>
+          <th title="Slave's OWN timer error. Reference only.">jitter S</th>
+          <th title="|jitter H - jitter S|">|&Delta;j|</th>
+          <th class="noup" title="|Delta - median(Delta)| -- the ONLY column judged against Limit (us). Green = pass, red = over.">sync_error (&micro;s)</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="row">
+      <button id="btnExport" disabled>Export CSV</button>
+      <button id="btnCopy" disabled>Copy summary</button>
+    </div>
+    <pre id="copyBox" style="display:none"></pre>
+  </div>
+
+  <!-- 5 spec -->
+  <div class="card" style="margin-top:14px">
+    <h2>5 &middot; Acceptance criteria (what this page actually judges)</h2>
+    <p class="hint">All of the following must hold for a <b class="ok">PASS</b>:</p>
+    <ul class="tight">
+      <li><b>Complete</b>: samples == runs &times; shots per run</li>
+      <li><b>No timeout</b>: every sample must receive both
+          <code>HOST,FIRE_ACTUAL</code> and <code>SLAVE,FIRE_ACTUAL</code>
+          (a timed-out sample is counted separately and fails the batch immediately)</li>
+      <li><b>Per sample</b>: <code>|sync_error| &le; Limit (&micro;s)</code>
+          (150 &micro;s by default)</li>
+    </ul>
+    <p class="hint" style="margin-top:10px">
+      Project targets for reference: mean &lt; 100 &micro;s, max &lt; 150 &micro;s.
+      Measured so far: <b class="ok">mean &asymp; 3&ndash;4 &micro;s / max &asymp; 5&ndash;70 &micro;s</b>,
+      a margin of 20&times; or better.
+    </p>
+  </div>
+
+  <!-- 6 log -->
+  <div class="card" style="margin-top:14px">
+    <h2>6 &middot; Log</h2>
+    <pre id="log"></pre>
+  </div>
+</main>
+
+<script>
+'use strict';
+/* ===========================================================================
+ * Protocol (main/ble_host.c + ble_slave.c)
+ *   PC -> host serial :  FIRE,<lead_ms> | SNAP | PING
+ *   host -> slave BLE :  ARM,<T_slave_us> (absolute instant) | PING
+ *   host serial output:  HOST,<event>,...
+ *   a subset of the slave's events is relayed over BLE and re-printed by the
+ *   host with a "SLAVE," prefix on the very same port:
+ *                        SLAVE,<event>,...
+ *
+ *   HOST,HB,<t>,conn=<0|1>,bound=<0|1>,calib=<0|1>   <- 2 s heartbeat
+ *   HOST,BOOT,<t>
+ *   HOST,BLE_CONNECTED,<t> / HOST,BLE_DISCONNECTED,<t>,<reason>
+ *   HOST,CALIB,<offset_us>,<best_rtt_us>
+ *   HOST,RX_CMD,<t_rx>,<lead_ms>
+ *   HOST,FIRE_SCHEDULED,<t_host_target>,<t_slave_target>
+ *   HOST,FIRE_ACTUAL,<t_fire_us>,<jitter_us>
+ *   HOST,DONE,<t>
+ *   SLAVE,FIRE_ACTUAL,<t_fire_us>,<jitter_us>        <- slave truth, via BLE
+ *   SLAVE,DONE,<t>
+ *
+ *   Protocol quick reference (this page speaks Web Serial, not Web Bluetooth):
+ *     0xABF0 Service · 0xABF1 Command (Write / WRITE-NR) · 0xABF2 Response (Read / Notify)
+ * ======================================================================== */
+
+const $ = id => document.getElementById(id);
+const el = {
+  pill:$('statusPill'), warn:$('warnbox'),
+  btnConnect:$('btnConnect'), btnDisconnect:$('btnDisconnect'),
+  portName:$('portName'), bleState:$('bleState'), boundState:$('boundState'),
+  calibState:$('calibState'), hbInfo:$('hbInfo'),
+  cmdInput:$('cmdInput'), btnSend:$('btnSend'),
+  runs:$('runs'), rounds:$('rounds'), lead:$('lead'), interval:$('interval'),
+  timeout:$('timeout'), limitUs:$('limitUs'),
+  btnRun:$('btnRun'), btnStop:$('btnStop'), btnClear:$('btnClear'),
+  progBar:$('progBar'), progTxt:$('progTxt'),
+  tbody:$('tbody'), log:$('log'),
+  kDone:$('kDone'), kMax:$('kMax'), kAvg:$('kAvg'),
+  kVerdict:$('kVerdict'), kOver:$('kOver'), kTimeout:$('kTimeout'),
+  btnExport:$('btnExport'), btnCopy:$('btnCopy'), copyBox:$('copyBox'),
+};
+
+let port=null, reader=null, writer=null;
+let rxBuf='';                   // line buffer; survives a read-loop retry
+let bleConn=false, bleBound=false, bleCalib=false, hbAt=0;
+let running=false, stopFlag=false, plannedTotal=0, doneCount=0;
+let curRun=1, curIdx=0;
+let hFire=null, sFire=null, hJit=null, sJit=null;
+let rebased=0;                  // shots whose interval had to be extended
+const results = [];             // {n,run,idx,ok,host,slave,delta,jitterH,jitterS,jitterDiff,syncError}
+
+/* ------------------------------- helpers ------------------------------- */
+function ts(){ const d=new Date(); return d.toTimeString().slice(0,8)+'.'+
+                String(d.getMilliseconds()).padStart(3,'0'); }
+function log(msg, cls){
+  const line = '['+ts()+'] ';
+  const span = document.createElement('span'); span.className = cls||''; span.textContent = msg;
+  el.log.appendChild(document.createTextNode(line));
+  el.log.appendChild(span);
+  el.log.appendChild(document.createTextNode('\n'));
+  el.log.scrollTop = el.log.scrollHeight;
+  if (el.log.childNodes.length > 4000){
+    while (el.log.childNodes.length > 2500) el.log.removeChild(el.log.firstChild);
+  }
+}
+function setPill(text, cls){ el.pill.textContent=text; el.pill.className='pill'+(cls?' '+cls:''); }
+function signed(v){ return (v>0?'+':'')+v; }
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+/* ============================== connect ============================== */
+async function connect(){
+  if (!navigator.serial){
+    showWarn('This browser has no Web Serial API. Use desktop Chrome/Edge and open this '+
+             'page from <code>https://</code> or <code>http://localhost</code> '+
+             '(<code>file://</code> is not a secure context).');
+    return;
+  }
+  /* ★ A stale handle may still be around from a board reset or an unplug: release
+   *   it first, otherwise opening the same device fails with "already open" and the
+   *   page looks permanently broken although nothing is actually open. */
+  if (port){
+    try{ await port.close(); }catch(_){}
+    port = null;
+  }
+
+  /* ★ Keep the port in a LOCAL until open() has succeeded. Storing it in `port`
+   *   before opening means a failed open (port held by another tab, board busy or
+   *   resetting, ...) leaves `port` set -- the buttons would then read "connected"
+   *   and Connect would stay disabled forever. */
+  let p = null;
+  try{
+    // Never touch DTR/RTS: the host port here is a CH343, and any DTR/RTS toggle
+    // resets the chip or drops it into download mode (blank port / waiting for download).
+    p = await navigator.serial.requestPort();
+    await p.open({ baudRate: 115200 });
+  }catch(e){
+    log('Opening the port failed: '+(e.message||e), 'err');
+    showWarn('Opening the port failed: '+e.message+'<br>Check: 1) is another program or tab '+
+             'holding it (only one at a time); 2) did you pick the <b>host</b> port. '+
+             'If a previous session left the port busy, click <b>Disconnect</b> '+
+             '(or close the other tab) and press Connect again.');
+    try{ if (p) await p.close(); }catch(_){}
+    port = null; reader = null; writer = null; rxBuf = '';
+    el.portName.textContent = '&mdash;';
+    uiConnected(false);
+    setPill('Open failed - press Connect again','err');
+    return;
+  }
+
+  port = p;
+  const info = port.getInfo();
+  el.portName.textContent = info.usbVendorId
+    ? ('0x'+info.usbVendorId.toString(16)+':0x'+(info.usbProductId||0).toString(16))
+    : '(serial)';
+  rxBuf = '';
+  log('Serial port open @115200', 'ok');
+  uiConnected(true);
+  readLoop();
+  setPill('Serial open, waiting for BLE…', 'busy');
+}
+
+async function disconnect(){
+  /* ★ Detach the references FIRST. The read loop keys off `port`, so it has to see
+   *   "no port" before anything else happens -- otherwise it could come back to life
+   *   1 s later and grab the reader of a freshly connected port (which then looks
+   *   like "the port stays busy / cannot be reopened"). */
+  const p = port, r = reader, w = writer;
+  port = null; reader = null; writer = null; rxBuf = '';
+  stopFlag = true;
+  bleConn = bleBound = bleCalib = false;
+  hbAt = 0;
+
+  try{ if (r) await r.cancel(); }catch(_){}
+  try{ if (w) w.releaseLock(); }catch(_){}
+  try{ if (p) await p.close(); }
+  catch(e){ log('port.close() failed: '+(e.message||e), 'warn'); }
+
+  log('Serial port closed', 'warn');
+  uiConnected(false);
+  refreshStatus();
+  if (!running) setPill('Disconnected','');
+}
+
+function uiConnected(on){
+  el.btnConnect.disabled = on;
+  el.btnDisconnect.disabled = !on;
+  el.btnSend.disabled = !on;
+  el.btnClear.disabled = !on;
+  document.querySelectorAll('.qc').forEach(b=>b.disabled=!on);
+  refreshRunEnabled();
+}
+function refreshRunEnabled(){
+  el.btnRun.disabled = !(port && bleConn && bleBound && bleCalib && !running);
+  el.btnStop.disabled = !running;
+}
+
+/* ★ The read loop must heal itself: one exception or an end-of-stream must not
+ *   silence the board forever. It is also bound to the port it was started for, so a
+ *   stale loop exits instead of hijacking a later connection.
+ *   NOTE: a plain reader is used on purpose -- piping port.readable into a
+ *   TextDecoderStream keeps the readable locked, which then makes port.close()
+ *   hang or fail ("cannot release the port"). */
+async function readLoop(){
+  const dec = new TextDecoder();
+  const myPort = port;
+  for(;;){
+    if (port !== myPort) return;               // disconnected / reconnected
+    if (!myPort || !myPort.readable){
+      /* ★ The board was unplugged or reset: Web Serial drops `readable` to null.
+       *   Detect it here and release the handle + the UI, so the page never sits in a
+       *   fake "connected" state and the port can be opened again. */
+      log('Port no longer exists (board unplugged or reset) - released, read loop stops','err');
+      port = null; reader = null; writer = null; rxBuf = '';
+      stopFlag = true;
+      bleConn = bleBound = bleCalib = false; hbAt = 0;
+      uiConnected(false);
+      refreshStatus();
+      setPill('Port lost - press Connect again','err');
+      showWarn('<b>The serial port disappeared</b> (board unplugged, reset, or the USB '+
+               'bridge dropped it). This page has released the port. Replug or re-power '+
+               'the board, then press <b>Connect serial port</b> again.');
+      return;
+    }
+    reader = myPort.readable.getReader();
+    let retry = false;
+    try{
+      for(;;){
+        const {value, done} = await reader.read();
+        if (done){ retry = true; break; }
+        rxBuf += dec.decode(value, {stream:true});
+        let i;
+        while ((i = rxBuf.indexOf('\n')) >= 0){
+          const line = rxBuf.slice(0,i).replace(/\r$/,'');
+          rxBuf = rxBuf.slice(i+1);
+          if (line) handleLine(line);
+        }
+        if (rxBuf.length > 8192) rxBuf = '';   // guard: garbage without any newline
+      }
+    }catch(e){
+      if (port !== myPort) return;             // cancelled by disconnect()
+      log('Read interrupted: '+(e.message||e)+' - retrying in 1 s','err');
+      retry = true;
+    }finally{
+      try{ reader.releaseLock(); }catch(_){}
+    }
+    if (!retry || port !== myPort) return;
+    await sleep(1000);
+  }
+}
+
+/** Web Serial's write() has no timeout: if the peer does not answer, the promise
+ *  hangs forever and the whole batch dies silently. So race every write. */
+function withTimeout(p, ms, tag){
+  return Promise.race([
+    p,
+    new Promise((_, rej)=>setTimeout(()=>rej(new Error(tag+' timed out ('+ms+'ms)')), ms)),
+  ]);
+}
+async function write(text){
+  if (!port || !port.writable) throw new Error('port not open');
+  if (!writer) writer = port.writable.getWriter();
+  await withTimeout(writer.write(new TextEncoder().encode(text+'\n')), 3000, 'write');
+  log('TX  '+text);
+}
+
+/* ============================== line parsing ============================== */
+function ints(a){ return a.map(p=>{ const n=Number(p); return Number.isFinite(n)?n:null; }); }
+
+function handleLine(line){
+  let who, body;
+  if (line.startsWith('HOST,'))       { who='HOST';  body=line.slice(5); }
+  else if (line.startsWith('SLAVE,')) { who='SLAVE'; body=line.slice(6); }
+  else return;                        // ESP-IDF's own log lines, ignored
+
+  log(who+', '+body);
+
+  const p = body.split(',');
+  const ev = p[0];
+
+  if (ev === 'HB'){
+    // HOST,HB,<t>,conn=1,bound=1,calib=1
+    const kv = {};
+    for (let i=2;i<p.length;i++){ const s=p[i].split('='); kv[s[0]]=s[1]; }
+    bleConn  = kv.conn  === '1';
+    bleBound = kv.bound === '1';
+    bleCalib = kv.calib === '1';
+    hbAt = Date.now();
+    refreshStatus();
+    return;
+  }
+  if (ev === 'BLE_CONNECTED'){    bleConn=true;  refreshStatus(); return; }
+  if (ev === 'BLE_DISCONNECTED'){ bleConn=false; bleCalib=false; refreshStatus(); return; }
+  if (ev === 'CALIB'){ bleCalib=true; refreshStatus(); return; }
+
+  if (ev === 'FIRE_ACTUAL'){
+    const a = ints(p.slice(1));
+    const t = a[0], j = (a[1]==null?0:a[1]);
+    if (t==null) return;
+    if (who==='HOST'){ hFire=t; hJit=j; } else { sFire=t; sJit=j; }
+    if (hFire!=null && sFire!=null) finishSample();
+  }
+}
+
+function refreshStatus(){
+  el.bleState.textContent   = bleConn  ? 'connected' : 'not connected';
+  el.bleState.className     = 'num ' + (bleConn?'ok':'err');
+  el.boundState.textContent = bleBound ? 'ready (0xABF1 found)' : 'not ready';
+  el.boundState.className   = 'num ' + (bleBound?'ok':'warn');
+  el.calibState.textContent = bleCalib ? 'calibrated (t_slave = t_host + offset)'
+                                       : 'not calibrated';
+  el.calibState.className   = 'num ' + (bleCalib?'ok':'warn');
+  const age = hbAt ? Math.round((Date.now()-hbAt)/1000) : null;
+  el.hbInfo.textContent = age!=null ? ('heartbeat ' + age + 's ago') : 'no heartbeat yet';
+
+  refreshRunEnabled();
+  if (!running){
+    if (port && bleConn && bleBound && bleCalib) setPill('Ready','on');
+    else if (port) setPill('Serial open, waiting for BLE…','busy');
+  }
+}
+
+/* ============================== one shot ============================== */
+function resetSample(){ hFire=sFire=null; hJit=sJit=null; }
+
+function finishSample(){
+  const delta = hFire - sFire;
+  const jd = Math.abs((hJit||0) - (sJit||0));
+  results.push({ n:results.length+1, run:curRun, idx:curIdx, ok:1,
+                 host:hFire, slave:sFire, delta,
+                 jitterH:hJit, jitterS:sJit, jitterDiff:jd });
+  doneCount++;
+  updateAll();
+}
+
+function timeoutSample(){
+  results.push({ n:results.length+1, run:curRun, idx:curIdx, ok:0,
+                 hostMiss: hFire==null, slaveMiss: sFire==null });
+  doneCount++;
+  updateAll();
+}
+
+async function fireOnce(lead, timeoutMs){
+  resetSample();
+  await write('FIRE,'+lead);
+  const t0 = Date.now();
+  while (Date.now()-t0 < timeoutMs){
+    if (hFire!=null && sFire!=null) return true;
+    await sleep(15);
+  }
+  if (hFire!=null && sFire!=null) return true;
+  timeoutSample();
+  return false;
+}
+
+/* ============================== batch ============================== */
+async function runBatch(){
+  if (!port) return;
+  const runs   = Math.max(1, Math.min(50,  +el.runs.value||3));
+  const rounds = Math.max(1, Math.min(200, +el.rounds.value||20));
+  const lead   = Math.max(100, Math.min(1000, +el.lead.value||500));
+  const interval = Math.max(0, +el.interval.value||3000);
+  const timeout= Math.max(500, +el.timeout.value||3000);
+
+  running = true; stopFlag = false;
+  plannedTotal = runs*rounds; doneCount = 0; rebased = 0;
+  el.progBar.style.width='0%'; el.progTxt.textContent='0 / '+plannedTotal;
+  refreshRunEnabled();
+  setPill('Running 0/'+plannedTotal, 'busy');
+  log('=== Batch start: '+runs+' runs x '+rounds+' shots, lead '+lead+' ms, '
+     +'interval '+interval+' ms, limit '+limitUs()+' us ===');
+  if (interval <= lead + 200){
+    log('Warning: Interval ('+interval+' ms) is close to or below Lead ('+lead+' ms) -> '+
+        'the batch will be re-based on every shot; raise Interval or lower Lead','warn');
+  }
+
+  for (let r=1; r<=runs && !stopFlag; r++){
+    curRun = r;
+    for (let i=1; i<=rounds && !stopFlag; i++){
+      curIdx = i;
+      // ★ Interval is the minimum spacing between two consecutive shots, measured
+      //   from the moment FIRE is sent. If the shot itself already took longer
+      //   (lead + round-trip), we do not wait -- we count it as re-based.
+      const t0 = Date.now();
+      await fireOnce(lead, timeout);
+      const used = Date.now() - t0;
+      if (used < interval){
+        await sleep(interval - used);
+      } else {
+        rebased++;
+        log('shot '+r+'-'+i+': took '+used+' ms > interval '+interval+
+            ' ms -> slot re-based (total '+rebased+')','warn');
+      }
+    }
+  }
+  running = false; stopFlag = false;
+  refreshRunEnabled();
+  updateAll();
+  setPill('Batch done','');
+  summary();
+  if (rebased){
+    log('Batch done with '+rebased+' re-based slot(s) - raise Interval or lower Lead','warn');
+  }
+  log('=== Batch done ===');
+}
+
+/* ============================== stats / verdict ============================== */
+function limitUs(){ return Math.max(1, Math.round(+el.limitUs.value||150)); }
+function median(a){
+  const s=[...a].sort((x,y)=>x-y); const n=s.length;
+  return n%2 ? s[(n-1)/2] : (s[n/2-1]+s[n/2])/2;
+}
+/** Use median(delta) over **all valid samples so far** as the fixed clock
+ *  difference; subtract it to obtain sync_error. Recomputed on every new sample,
+ *  so the table always agrees with the final verdict. */
+function recompute(){
+  const oks = results.filter(r=>r.ok);
+  const med = oks.length ? median(oks.map(r=>r.delta)) : 0;
+  results.forEach(r=>{ r.syncError = r.ok ? Math.abs(r.delta - med) : null; });
+  return med;
+}
+function stats(arr){
+  const a = arr.filter(x=>x!=null);
+  if (!a.length) return null;
+  const sum = a.reduce((s,v)=>s+v,0);
+  return { n:a.length, min:Math.min(...a), max:Math.max(...a), avg:sum/a.length,
+           std:Math.sqrt(a.reduce((s,v)=>s+(v-sum/a.length)**2,0)/a.length) };
+}
+/** ★ The verdict looks only at sync_error (device-side µs), per sample vs limit;
+ *  a timeout fails the batch on its own. */
+function verdict(){
+  const oks  = results.filter(r=>r.ok);
+  const miss = results.length - oks.length;
+  const over = oks.filter(r=>r.syncError!=null && r.syncError > limitUs());
+  const full = plannedTotal>0 && results.length>=plannedTotal;
+  return { n:oks.length, miss, over, full, pass: full && miss===0 && over.length===0 };
+}
+
+function updateAll(){
+  const med = recompute();
+  const oks = results.filter(r=>r.ok);
+  const se  = stats(oks.map(r=>r.syncError));
+
+  el.kDone.textContent = oks.length + (results.length-oks.length ? ' / '+results.length : '');
+  el.kMax.textContent  = se ? (se.max.toFixed(0)+' \u00b5s') : '\u2014';
+  el.kAvg.textContent  = se ? (se.avg.toFixed(1)+' \u00b5s') : '\u2014';
+
+  const v = verdict();
+  if (!oks.length){
+    el.kVerdict.textContent='\u2014'; el.kVerdict.className='big';
+    el.kOver.textContent='\u2014';    el.kOver.className='big';
+    el.kTimeout.textContent='\u2014'; el.kTimeout.className='big';
+  } else {
+    el.kVerdict.textContent = v.full ? (v.pass?'PASS':'FAIL')
+                                     : ('…'+results.length+'/'+plannedTotal);
+    el.kVerdict.className   = 'big ' + (v.full ? (v.pass?'ok':'err') : 'warn');
+    el.kOver.textContent    = v.over.length + ' / ' + v.n;
+    el.kOver.className      = 'big ' + (v.over.length ? 'err':'ok');
+    el.kTimeout.textContent = v.miss;
+    el.kTimeout.className   = 'big ' + (v.miss ? 'err':'ok');
+  }
+  el.progBar.style.width = plannedTotal ? (100*doneCount/plannedTotal)+'%' : '0%';
+  el.progTxt.textContent = doneCount+' / '+plannedTotal;
+  el.btnExport.disabled = !results.length;
+  el.btnCopy.disabled   = !results.length;
+  if (running) setPill('Running '+doneCount+'/'+plannedTotal,'busy');
+  renderTable(med);
+}
+
+/* ============================== table ============================== */
+function renderTable(med){
+  const tb = el.tbody;
+  tb.innerHTML = '';
+  const cls = v => v==null ? '' : (v>0?'pos':'neg');
+  const lim = limitUs();
+  for (const r of results){
+    const tr = document.createElement('tr');
+    if (!r.ok){
+      tr.style.color = 'var(--err)';
+      tr.innerHTML = '<td>'+r.run+'-'+String(r.idx).padStart(2,'0')+'</td>'
+        + '<td colspan="6">timeout (HOST '+(r.hostMiss?'MISS':'ok')
+        + ' / SLAVE '+(r.slaveMiss?'MISS':'ok')+')</td><td>&mdash;</td>';
+    } else {
+      const bad = r.syncError!=null && r.syncError > lim;
+      tr.innerHTML =
+        '<td>'+r.run+'-'+String(r.idx).padStart(2,'0')+'</td>'+
+        '<td>'+r.host+'</td>'+
+        '<td>'+r.slave+'</td>'+
+        '<td class="'+cls(r.delta)+'">'+r.delta+'</td>'+
+        '<td class="'+cls(r.jitterH)+'">'+(r.jitterH!=null?signed(r.jitterH):'&mdash;')+'</td>'+
+        '<td class="'+cls(r.jitterS)+'">'+(r.jitterS!=null?signed(r.jitterS):'&mdash;')+'</td>'+
+        '<td>'+r.jitterDiff+'</td>'+
+        '<td class="'+(bad?'err':'ok')+'" style="font-weight:600">'
+          + r.syncError.toFixed(1)+'</td>';
+    }
+    tb.appendChild(tr);
+  }
+  const wrap = $('tblWrap');
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+/* ============================== summary ============================== */
+function summary(){
+  const oks = results.filter(r=>r.ok);
+  if (!oks.length){ log('No valid samples to summarise','warn'); return; }
+  const se = stats(oks.map(r=>r.syncError));
+  const jh = stats(oks.map(r=>r.jitterH));
+  const js = stats(oks.map(r=>r.jitterS));
+  const jd = stats(oks.map(r=>r.jitterDiff));
+  const v  = verdict();
+  const lines = [
+    'samples          : '+v.n+' / '+plannedTotal+'   timeout='+v.miss,
+    '---- sync_error (device side, the only acceptance evidence) ----',
+    'sync_error min   : '+se.min.toFixed(1)+' us',
+    'sync_error avg   : '+se.avg.toFixed(1)+' us      <== real avg',
+    'sync_error max   : '+se.max.toFixed(1)+' us      <== real max',
+    'sync_error std   : '+se.std.toFixed(1)+' us',
+    'limit            : '+limitUs()+' us per sample',
+    'over limit       : '+v.over.length+' / '+v.n
+      + (v.over.length ? ('   worst: '+v.over.slice()
+          .sort((a,b)=>b.syncError-a.syncError).slice(0,3)
+          .map(r=>'#'+r.n+':'+r.syncError.toFixed(1)+'us').join(', ')) : ''),
+    'VERDICT          : '+(v.pass?'PASS':'FAIL'),
+    '---- reference only (never used for acceptance) ----',
+    jh ? ('jitter H avg/max : '+signed(+jh.avg.toFixed(1))+' / '+signed(Math.round(jh.max))+' us') : 'jitter H         : n/a',
+    js ? ('jitter S avg/max : '+signed(+js.avg.toFixed(1))+' / '+signed(Math.round(js.max))+' us') : 'jitter S         : n/a',
+    jd ? ('|delta jitter|   : avg '+jd.avg.toFixed(1)+' / max '+Math.round(jd.max)+' us') : '|delta jitter|   : n/a',
+  ];
+  lines.forEach(l=>log('   '+l));
+  el.copyBox.textContent = lines.join('\n');
+}
+
+/* ============================== export ============================== */
+function exportCsv(){
+  const lim = limitUs();
+  const oks = results.filter(r=>r.ok);
+  const med = oks.length ? median(oks.map(r=>r.delta)) : 0;
+  const head = 'n,run,idx,valid,host_fire_us,slave_fire_us,delta_us,'
+             + 'jitter_host_us,jitter_slave_us,delta_jitter_us,'
+             + 'sync_error_us,judge_us,over_limit,clock_offset_us';
+  const rows = results.map(r=>{
+    if (!r.ok){
+      return [r.n,r.run,r.idx,0,'','','','','','','','','',''].join(',');
+    }
+    const judge = r.syncError==null?'':r.syncError.toFixed(1);
+    const over  = (r.syncError!=null && r.syncError>lim)?'1':'0';
+    return [r.n,r.run,r.idx,1,r.host,r.slave,r.delta,
+            r.jitterH??'',r.jitterS??'',r.jitterDiff,
+            judge,judge,over,Math.round(med)].join(',');
+  });
+  const blob = new Blob([head+'\n'+rows.join('\n')+'\n'], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'esp32s3_dual_cam_sync_acceptance_'+Date.now()+'.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  log('Exported CSV (judge column = per-sample |sync_error| > '+lim+' us)','ok');
+}
+function copySummary(){
+  const txt = el.copyBox.textContent;
+  if (!txt){ log('Nothing to copy yet','warn'); return; }
+  navigator.clipboard.writeText(txt)
+    .then(()=>log('Summary copied to the clipboard','ok'))
+    .catch(e=>log('Copy failed: '+e,'warn'));
+}
+
+/* ============================== wiring ============================== */
+function showWarn(html){ el.warn.innerHTML = html; el.warn.style.display='block'; }
+
+el.btnConnect.onclick = connect;
+el.btnDisconnect.onclick = ()=>{ stopFlag=true; disconnect(); };
+el.btnSend.onclick = ()=>sendCmd(el.cmdInput.value.trim());
+el.cmdInput.addEventListener('keydown', e=>{ if(e.key==='Enter') el.btnSend.onclick(); });
+document.querySelectorAll('.qc').forEach(b=>{
+  b.onclick = ()=>{ el.cmdInput.value = b.dataset.cmd; sendCmd(b.dataset.cmd); };
+});
+el.btnRun.onclick = ()=>runBatch().catch(e=>{
+  log('Batch error: '+(e.message||e),'err');
+  running=false; refreshRunEnabled(); setPill('Error','err');
+});
+el.btnStop.onclick = ()=>{ stopFlag=true; log('Stop requested (finishing the current shot)','warn'); };
+el.btnClear.onclick = ()=>{ results.length=0; plannedTotal=0; doneCount=0; rebased=0;
+                            el.tbody.innerHTML=''; updateAll(); log('Results cleared'); };
+el.limitUs.oninput = updateAll;
+el.btnExport.onclick = exportCsv;
+el.btnCopy.onclick = copySummary;
+
+/* ★ Release the port when the page goes away, otherwise a stale handle keeps it
+ *   busy and the next Connect fails with "already open". disconnect() is async, so
+ *   it is fired without awaiting -- the reference is detached synchronously, which
+ *   is what actually matters here. */
+const releasePort = ()=>{ try{ disconnect(); }catch(_){ } };
+window.addEventListener('beforeunload', releasePort);
+window.addEventListener('pagehide', releasePort);
+
+async function sendCmd(text){
+  if (!text || !port) return;
+  try{ await write(text); }
+  catch(e){ log('Write failed: '+(e.message||e),'err'); }
+}
+
+/* ---------------------- exposed to automation ---------------------- */
+/* Used by tools/web_serial_run.py through CDP; also handy from the JS console. */
+window.bleSync = {
+  connect, disconnect, runBatch, sendCmd, exportCsv,
+  /* Verdict object for the acceptance rig. Everything is computed from the
+   * device us column; `offenders` lists the samples over the limit. */
+  getVerdict: ()=>{
+    const v = verdict();
+    return { limitUs: limitUs(), samples: v.n, planned: plannedTotal,
+             timeout: v.miss, over: v.over.length, full: v.full, pass: v.pass,
+             offenders: v.over.map(r=>({n:r.n, syncError:+r.syncError.toFixed(1)})) };
+  },
+  getState: ()=>({ connected: !!port, bleConn, bleBound, bleCalib, running,
+                   plannedTotal, doneCount, rebased, limitUs: limitUs(),
+                   verdict: verdict(),
+                   results: JSON.parse(JSON.stringify(results)) }),
+  stop: ()=>{ stopFlag = true; },
+  clear: ()=>{ el.btnClear.onclick(); },
+  setParams: (runs, rounds, lead, interval, timeout, limit)=>{
+    if (runs!=null)     el.runs.value=runs;
+    if (rounds!=null)   el.rounds.value=rounds;
+    if (lead!=null)     el.lead.value=lead;
+    if (interval!=null) el.interval.value=interval;
+    if (timeout!=null)  el.timeout.value=timeout;
+    if (limit!=null)    el.limitUs.value=limit;
+  },
+};
+
+/* Environment self-check: say up-front why Web Serial will not work. */
+if (!navigator.serial){
+  showWarn('<b>This page cannot use Web Serial.</b> It requires 1) desktop Chrome/Edge '+
+           'and 2) the page served from <code>https://</code> or <code>http://localhost</code> '+
+           '(<code>file://</code> is not a secure context).<br>'+
+           'Double-click <code>start.bat</code> in the project root, or run '+
+           '<code>python -m http.server 8000</code> and open '+
+           '<code>localhost:8000/tools/acceptance.html</code>.');
+} else {
+  log('Web Serial available (navigator.serial present)','ok');
+}
+log('Ready. Click "Connect serial port" and pick the <b>host</b> port (that one is enough).');
+updateAll();
+</script>
+</body>
+</html>

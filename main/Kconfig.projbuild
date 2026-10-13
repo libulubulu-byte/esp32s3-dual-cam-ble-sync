@@ -1,0 +1,21 @@
+menu "Dual Cam BLE Sync Configuration"
+
+choice BOARD_ROLE
+    prompt "Board role"
+    default BOARD_ROLE_SLAVE
+    help
+      Select board role: host or slave
+
+config BOARD_ROLE_HOST
+    bool "Host (Central)"
+    help
+      Act as BLE Central - scans and connects to slave, receives UART commands
+
+config BOARD_ROLE_SLAVE
+    bool "Slave (Peripheral)"
+    help
+      Act as BLE Peripheral - advertises and waits for host connection
+
+endchoice
+
+endmenu

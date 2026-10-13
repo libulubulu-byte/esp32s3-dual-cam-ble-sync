@@ -1,0 +1,26 @@
+/**
+ * @file app_conf.local.h.example
+ * @brief 本地凭据模板 —— 复制成 app_conf.local.h 后填写（该文件已被 .gitignore 忽略）
+ *
+ *     copy main\app_conf.local.h.example main\app_conf.local.h
+ *
+ * 全部留空 / 不创建这个文件，则：不启动 WiFi、不上传，
+ * 只做**本地双机同步拍照**（同步精度验收完全不依赖这里）。
+ */
+#pragma once
+
+/* ---- WiFi STA（照片上传的外网出口） ---- */
+#define APP_WIFI_SSID         "your-ssid"
+#define APP_WIFI_PASS         "your-password"
+
+/** 可选：强制指定的 DNS。留空 = 用 DHCP 下发的。
+ *  ⚠️ 如果你在电脑上跑着 Clash / v2ray 之类的代理（TUN 模式），
+ *     用这个热点时 DNS 会返回 fake-ip（如 198.x.x.x），ESP32 直连必然失败。
+ *     此时填一个公共 DNS 也**不一定**有用（TUN 会重定向 UDP 53）——
+ *     最稳的做法是关掉 TUN，或改用手机热点。详见 docs/DEBUG_LOG.md §3。 */
+/* #define APP_WIFI_DNS      "223.5.5.5" */
+
+/* ---- Telegram 上传（可选） ---- */
+/** 从 @BotFather 申请；chat_id 可用 @userinfobot 查 */
+#define APP_TELEGRAM_TOKEN    "123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+#define APP_TELEGRAM_CHAT_ID  "123456789"
